@@ -60,6 +60,10 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
     for i in C:
         model.addConstr(gp.quicksum(x[j,i,k] for j in V for k in K if j != i) == 1)
 
+    # To force using all available vehicles
+    for k in K:
+        model.addConstr(gp.quicksum(x[0,j,k] for j in C) == 1)
+
     # 2. Flow conservation for customers
     for i in C:
         for k in K:
@@ -262,14 +266,14 @@ if __name__ == "__main__":
     locations = np.array([
         [0, 0],    # Depot
         [2, 7],    # Customer 1
-        [5, 19],   # Customer 2
-        [2, 18],  # Customer 3
+        [2, 8],   # Customer 2
+        [2, 9],  # Customer 3
         [4, 5],    # Customer 4
         [6, 12]    # Customer 5
     ])
     
-    weights = np.array([20, 30, 10, 44, 32])  # Customer weights
-    service_times = np.array([0, 10, 15, 5, 12, 16])  # Depot and customer service times
+    weights = np.array([30, 30, 10, 70, 70])  # Customer weights
+    service_times = np.array([0, 3, 3, 5, 12, 16])  # Depot and customer service times
     
     time_windows = [
         (10, 100),  # Customer 1: [10, 100]
@@ -282,14 +286,14 @@ if __name__ == "__main__":
     # Restricted customer combinations
     # Format: (i, j, l) where l cannot be served if i and j are served by the same vehicle
     restricted_customers = [
-        (1, 2, 3),  # Customer 3 cannot be served if 1 and 2 are served by the same vehicle
+        (1, 2, 4),  # Customer 3 cannot be served if 1 and 2 are served by the same vehicle
         (2, 4, 5),  # Customer 5 cannot be served if 2 and 4 are served by the same vehicle
         (3, 5, 1)   # Customer 1 cannot be served if 3 and 5 are served by the same vehicle
     ]
 
     num_customers = len(weights)
     num_vehicles = 3
-    vehicle_capacity = 50
+    vehicle_capacity = 1000
     t_max = 1000
     
     # Solve the VRP
