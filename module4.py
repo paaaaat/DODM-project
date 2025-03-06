@@ -4,7 +4,8 @@ import numpy as np
 
 def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity, t_max, time_windows, restricted_customers):
     """
-    Solve the Vehicle Routing Problem using Mixed Integer Linear Programming.
+    Solve the Vehicle Routing Problem using Mixed Integer Linear Programming,
+    with workload balancing as a secondary objective.
     
     Parameters:
     - locations: Array of [x,y] coordinates for depot (index 0) and customers
@@ -13,6 +14,8 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
     - num_vehicles: Number of available vehicles
     - vehicle_capacity: Capacity of each vehicle
     - t_max: Maximum allowed route duration
+    - time_windows: Array of (early, late) time windows for each customer
+    - restricted_customers: List of (i,j,l) tuples where l cannot be served if i and j are served by the same vehicle
     
     Returns:
     - model: The solved Gurobi model
@@ -38,24 +41,21 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
     x = model.addVars([(i,j,k) for i in V for j in V for k in K if i != j],
                      vtype=GRB.BINARY, name='x')
     y = model.addVars([(i,k) for i in V for k in K],
-                            vtype=GRB.CONTINUOUS, name='y')
+                     vtype=GRB.CONTINUOUS, name='y')
     d = model.addVars([(j,k) for j in V for k in K],
                      vtype=GRB.CONTINUOUS, name='d')
     # Customer assignment variable (1 if customer i is served by vehicle k)
     z = model.addVars([(i,k) for i in C for k in K],
                      vtype=GRB.BINARY, name='z')
 
+    # Create objective expression for total travel time
+    travel_time_obj = gp.quicksum(travel_times[i,j] * x[i,j,k] 
+                                 for i in V 
+                                 for j in V 
+                                 for k in K 
+                                 if i != j)
 
-    # Set objective: Minimize total travel time
-    model.setObjective(
-        gp.quicksum(travel_times[i,j] * x[i,j,k] 
-                    for i in V 
-                    for j in V 
-                    for k in K 
-                    if i != j),
-        GRB.MINIMIZE
-    )
-
+    # Add all the original constraints
     # 1. Each customer is served exactly once
     for i in C:
         model.addConstr(gp.quicksum(x[j,i,k] for j in V for k in K if j != i) == 1)
@@ -153,6 +153,53 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
                 name=f'restriction_{i}_{j}_{l}_{k}'
             )
 
+    # ADD NEW VARIABLES AND CONSTRAINTS FOR WORKLOAD BALANCING
+    
+    # New variables for workload balancing
+    T = model.addVars(K, vtype=GRB.CONTINUOUS, name="T")
+    T_avg = model.addVar(vtype=GRB.CONTINUOUS, name="T_avg")
+    dev = model.addVars(K, vtype=GRB.CONTINUOUS, name="dev")
+    
+    # 1. Link T[k] to route duration variables
+    for k in K:
+        for j in C:
+            model.addConstr(
+                T[k] >= d[j,k],
+                name=f"total_duration_{j}_{k}"
+            )
+    
+    # 2. Calculate average duration across all vehicles
+    model.addConstr(
+        T_avg * num_vehicles == gp.quicksum(T[k] for k in K),
+        name="average_duration"
+    )
+    
+    # 3. Define absolute deviations
+    for k in K:
+        model.addConstr(
+            dev[k] >= T[k] - T_avg,
+            name=f"dev_pos_{k}"
+        )
+        model.addConstr(
+            dev[k] >= T_avg - T[k],
+            name=f"dev_neg_{k}"
+        )
+    
+    # Create a second objective expression for workload balancing
+    workload_balance_obj = gp.quicksum(dev[k] for k in K)
+    
+    # SET UP HIERARCHICAL MULTI-OBJECTIVE OPTIMIZATION
+    model.ModelSense = GRB.MINIMIZE
+    
+    # First objective (total travel time) with 5% tolerance
+    model.setObjectiveN(travel_time_obj, index=0, priority=1, 
+                       name="total_travel_time", 
+                       reltol=0.05)  # Allow 5% degradation
+    
+    # Second objective (workload balance)
+    model.setObjectiveN(workload_balance_obj, index=1, priority=0, 
+                       name="workload_balance")
+    
     # Optimize the model
     model.optimize()
     
@@ -222,7 +269,11 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
             'route_durations': route_durations,
             'vehicles_used': len(routes),
             'vehicles_available': num_vehicles,
-            'capacity_utilization': sum(vehicle_loads) / (len(routes) * vehicle_capacity)
+            'capacity_utilization': sum(vehicle_loads) / (len(routes) * vehicle_capacity),
+            # Add workload balance metrics
+            'avg_route_duration': T_avg.X,
+            'total_deviation': sum(dev[k].X for k in K),
+            'max_deviation': max(dev[k].X for k in K)
         }
     else:
         solution_info = {'status': 'No optimal solution found', 'model_status': model.status}
@@ -243,11 +294,17 @@ def print_solution(solution_info, time_windows):
     print(f"Vehicles used: {solution_info['vehicles_used']}/{solution_info['vehicles_available']}")
     print(f"Capacity utilization: {solution_info['capacity_utilization']*100:.1f}%")
     
+    # Add workload balance metrics to the summary
+    print(f"Average route duration: {solution_info['avg_route_duration']:.2f}")
+    print(f"Total workload deviation: {solution_info['total_deviation']:.2f}")
+    print(f"Maximum workload deviation: {solution_info['max_deviation']:.2f}")
+    
     print("\n===== ROUTE DETAILS =====")
     for i, route in enumerate(solution_info['routes']):
         print(f"Vehicle {i+1}: {' → '.join(map(str, route))}")
         print(f"  Load: {solution_info['vehicle_loads'][i]:.1f}")
         print(f"  Duration: {solution_info['route_durations'][i]:.2f}")
+        print(f"  Deviation from avg: {abs(solution_info['route_durations'][i] - solution_info['avg_route_duration']):.2f}")
 
         # Print starting times and time windows
         print("  Starting times:")
@@ -260,14 +317,26 @@ def print_solution(solution_info, time_windows):
     print("\n===== PERFORMANCE METRICS =====")
     print(f"Average route duration: {sum(solution_info['route_durations'])/len(solution_info['route_durations']):.2f}")
     print(f"Maximum route duration: {max(solution_info['route_durations']):.2f}")
+    print(f"Coefficient of variation: {(np.std(solution_info['route_durations'])/np.mean(solution_info['route_durations']))*100:.2f}%")
+    
+    # Print comparison of route durations for workload balance assessment
+    print("\n===== WORKLOAD BALANCE ASSESSMENT =====")
+    durations = solution_info['route_durations']
+    print(f"Route durations: {', '.join([f'{d:.2f}' for d in durations])}")
+    if len(durations) > 1:
+        min_duration = min(durations)
+        max_duration = max(durations)
+        print(f"Min-Max difference: {max_duration - min_duration:.2f}")
+        print(f"Max/Min ratio: {max_duration/min_duration:.2f}")
+    print(f"Standard deviation: {np.std(durations):.2f}")
 
 if __name__ == "__main__":
     # Problem data
     locations = np.array([
         [0, 0],    # Depot
         [2, 7],    # Customer 1
-        [2, 8],   # Customer 2
-        [2, 9],  # Customer 3
+        [2, 8],    # Customer 2
+        [2, 9],    # Customer 3
         [4, 5],    # Customer 4
         [6, 12]    # Customer 5
     ])
@@ -277,17 +346,17 @@ if __name__ == "__main__":
     
     time_windows = [
         (10, 100),  # Customer 1: [10, 100]
-        (70, 150),  # Customer 2: [50, 150]
-        (40, 80),   # Customer 3: [30, 80]
-        (60, 70),   # Customer 4: [15, 70]
-        (50, 110)   # Customer 5: [40, 110]
+        (70, 150),  # Customer 2: [70, 150]
+        (40, 80),   # Customer 3: [40, 80]
+        (60, 70),   # Customer 4: [60, 70]
+        (50, 110)   # Customer 5: [50, 110]
     ]
     
     # Restricted customer combinations
     # Format: (i, j, l) where l cannot be served if i and j are served by the same vehicle
     restricted_customers = [
-        (1, 2, 4),  # Customer 3 cannot be served if 1 and 2 are served by the same vehicle
-        (2, 3, 5),  # Customer 5 cannot be served if 2 and 4 are served by the same vehicle
+        (1, 2, 4),  # Customer 4 cannot be served if 1 and 2 are served by the same vehicle
+        (2, 3, 5),  # Customer 5 cannot be served if 2 and 3 are served by the same vehicle
         (3, 5, 1)   # Customer 1 cannot be served if 3 and 5 are served by the same vehicle
     ]
 
@@ -296,7 +365,11 @@ if __name__ == "__main__":
     vehicle_capacity = 1000
     t_max = 1000
     
-    # Solve the VRP
+    # Solve the balanced VRP
+    import gurobipy as gp
+    from gurobipy import GRB
+    import numpy as np
+    
     model, solution = solve_vrp(
         locations, 
         weights, 
