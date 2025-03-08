@@ -79,6 +79,9 @@ def solve_vrp(locations, weights, service_times, num_vehicles, vehicle_capacity,
             gp.quicksum(x[j,0,k] for j in C)
         )
         # Each vehicle can exit the depot at most once
+        # ||||||
+        # OCIO: è ridondante perchè diciamo già che tutti i veicoli devono partire
+        # ||||||
         model.addConstr(gp.quicksum(x[0,j,k] for j in C) <= 1)
 
     # 4. Vehicle capacity
