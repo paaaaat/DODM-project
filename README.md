@@ -1,18 +1,7 @@
-# DODM-project
-Il repo del progetto del corso di Discrete Optimization and Decision Making.
+# Discrete Optimization and Decision Making Project
 
+The file `DODM_Project.py` contains the Gurobi model.
+The file `DODM_Report.pdf` is the report of the mathematical formulation.
 
-
-
-
-## Setup
-
-### 1.Assicurati di aver installato *Rust* e *Cargo*:
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-### 2. Installa *Typst*
-```bash
-cargo install --locked typst-cli
-```
+Patrick Hamzaj      |      Federico Leonardi
+VR474246            |      VR479719
